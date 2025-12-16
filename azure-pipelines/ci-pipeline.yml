@@ -1,234 +1,37 @@
-# ============================================================================
-# Azure DevOps CI/CD Pipeline
-# Tetikleme: main, release, sandbox branch'leri ve PR'lar
-# ============================================================================
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, deploy, and more:
 
 trigger:
   branches:
     include:
       - main
-      - release
-      - release/*
       - sandbox
-  paths:
-    exclude:
-      - docs/*
-      - README.md
-      - .gitignore
 
-pr:
-  branches:
-    include:
-      - main
-      - release
-      - sandbox
-  paths:
-    exclude:
-      - docs/*
-      - README.md
+pool:
+  name: Azure Pipelines
+  vmImage: "windows-latest"
 
-# ============================================================================
-# Değişkenler
-# ============================================================================
-variables:
-  - name: buildConfiguration
-    value: 'Release'
-  - name: artifactName
-    value: 'bc-artifacts'
-  - name: isMain
-    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
-  - name: isRelease
-    value: $[or(eq(variables['Build.SourceBranch'], 'refs/heads/release'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))]
-  - name: isSandbox
-    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')]
-  - name: isHotfix
-    value: $[startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/')]
-  - name: isPR
-    value: $[eq(variables['Build.Reason'], 'PullRequest')]
+workspace:
+  clean: all
 
-# ============================================================================
-# Stages
-# ============================================================================
-stages:
-  # --------------------------------------------------------------------------
-  # Stage 1: Build
-  # --------------------------------------------------------------------------
-  - stage: Build
-    displayName: '🔨 Build Stage'
-    jobs:
-      - job: BuildJob
-        displayName: 'Build AL Application'
-        pool:
-          name: Azure Pipelines
-          vmImage: 'windows-latest'
-        
-        workspace:
-          clean: all
-        
-        steps:
-          - checkout: self
-            fetchDepth: 0
-            clean: true
+steps:
+  - checkout: self
 
-          - task: DockerInstaller@0
-            displayName: '🐳 Install Docker'
-            inputs:
-              dockerVersion: '20.10.21'
-              releaseType: 'stable'
+  - task: DockerInstaller@0
+    displayName: Docker Installer
+    inputs:
+      dockerVersion: 17.09.0-ce
+      releaseType: stable
 
-          - task: PowerShell@2
-            displayName: '📦 Restore Dependencies'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "##[section]Restoring dependencies..."
-                if (Test-Path "packages.json") {
-                  Write-Host "Found packages.json, restoring..."
-                }
+  - task: PowerShell@2
+    displayName: "Build AL application"
+    inputs:
+      targetType: filePath
+      filePath: "CompileApp.ps1"
+      workingDirectory: "$(Build.SourcesDirectory)"
 
-          - task: PowerShell@2
-            displayName: '🔨 Build AL Application'
-            inputs:
-              targetType: 'filePath'
-              filePath: '$(Build.SourcesDirectory)/CompileApp.ps1'
-              workingDirectory: '$(Build.SourcesDirectory)'
-              errorActionPreference: 'stop'
-            env:
-              BUILD_CONFIGURATION: $(buildConfiguration)
-              BUILD_SOURCEBRANCH: $(Build.SourceBranch)
-
-          - task: PowerShell@2
-            displayName: '🧪 Run Unit Tests'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "##[section]Running unit tests..."
-            continueOnError: false
-
-          - task: PublishTestResults@2
-            displayName: '📊 Publish Test Results'
-            inputs:
-              testResultsFormat: 'NUnit'
-              testResultsFiles: '$(Build.StagingDirectory)/test-results.xml'
-              failTaskOnFailedTests: true
-            condition: always()
-
-          - task: PublishBuildArtifacts@1
-            displayName: '📤 Publish Artifacts'
-            inputs:
-              pathToPublish: '$(Build.StagingDirectory)'
-              artifactName: '$(artifactName)'
-              publishLocation: 'Container'
-
-  # --------------------------------------------------------------------------
-  # Stage 2: Quality Gate
-  # --------------------------------------------------------------------------
-  - stage: QualityGate
-    displayName: '✅ Quality Gate'
-    dependsOn: Build
-    condition: succeeded()
-    jobs:
-      - job: CodeAnalysis
-        displayName: 'Code Quality Analysis'
-        pool:
-          name: Azure Pipelines
-          vmImage: 'windows-latest'
-        steps:
-          - task: PowerShell@2
-            displayName: '🔍 Static Code Analysis'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "##[section]Running static code analysis..."
-
-          - task: PowerShell@2
-            displayName: '📋 Check Code Coverage'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "##[section]Checking code coverage threshold..."
-                $threshold = 70
-
-  # --------------------------------------------------------------------------
-  # Stage 3: Deploy to Sandbox (Development)
-  # --------------------------------------------------------------------------
-  - stage: DeployToSandbox
-    displayName: '🚀 Deploy to Sandbox'
-    dependsOn: QualityGate
-    condition: and(succeeded(), eq(variables['isSandbox'], true))
-    jobs:
-      - deployment: DeploySandbox
-        displayName: 'Deploy to Sandbox Environment'
-        environment: 'sandbox'
-        pool:
-          name: Azure Pipelines
-          vmImage: 'windows-latest'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: '$(artifactName)'
-                
-                - task: PowerShell@2
-                  displayName: '🚀 Deploy to Sandbox BC'
-                  inputs:
-                    targetType: 'inline'
-                    script: |
-                      Write-Host "##[section]Deploying to Sandbox environment..."
-
-  # --------------------------------------------------------------------------
-  # Stage 4: Deploy to Release (UAT/Staging)
-  # --------------------------------------------------------------------------
-  - stage: DeployToRelease
-    displayName: '🎯 Deploy to Release/UAT'
-    dependsOn: QualityGate
-    condition: and(succeeded(), eq(variables['isRelease'], true))
-    jobs:
-      - deployment: DeployRelease
-        displayName: 'Deploy to Release Environment'
-        environment: 'release'
-        pool:
-          name: Azure Pipelines
-          vmImage: 'windows-latest'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: '$(artifactName)'
-                
-                - task: PowerShell@2
-                  displayName: '🎯 Deploy to Release BC'
-                  inputs:
-                    targetType: 'inline'
-                    script: |
-                      Write-Host "##[section]Deploying to Release/UAT environment..."
-
-  # --------------------------------------------------------------------------
-  # Stage 5: Deploy to Production
-  # --------------------------------------------------------------------------
-  - stage: DeployToProduction
-    displayName: '🏭 Deploy to Production'
-    dependsOn: QualityGate
-    condition: and(succeeded(), eq(variables['isMain'], true))
-    jobs:
-      - deployment: DeployProduction
-        displayName: 'Deploy to Production Environment'
-        environment: 'production'
-        pool:
-          name: Azure Pipelines
-          vmImage: 'windows-latest'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: '$(artifactName)'
-                
-                - task: PowerShell@2
-                  displayName: '🏭 Deploy to Production BC'
-                  inputs:
-                    targetType: 'inline'
-                    script: |
-                      Write-Host "##[section]Deploying to Production environment..."
+  - task: PublishBuildArtifacts@1
+    inputs:
+      pathtoPublish: "$(Build.StagingDirectory)"
+      artifactName: Artifacts
