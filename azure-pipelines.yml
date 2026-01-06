@@ -61,11 +61,11 @@ pr:
 
 variables:
   # PR Detection
-  isPR: $[eq(variables['Build. Reason'], 'PullRequest')]
+  isPR: $[eq(variables['Build.Reason'], 'PullRequest')]
   
   # Branch Detection (Merge sonrası)
-  isMain: $[eq(variables['Build. SourceBranch'], 'refs/heads/main')]
-  isRelease: $[eq(variables['Build. SourceBranch'], 'refs/heads/release')]
+  isMain: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  isRelease: $[eq(variables['Build.SourceBranch'], 'refs/heads/release')]
   isSandbox:  $[eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')]
   
   # Build Configuration
@@ -85,7 +85,7 @@ stages:
   # ════════════════════════════════════════════════════════════════════════════
   - stage:  Validate
     displayName: "🔍 PR Validation"
-    condition: eq(variables. isPR, true)
+    condition: eq(variables.isPR, true)
     jobs: 
       - job: ValidateBranchRules
         displayName: "Branch Rules Check"
@@ -134,12 +134,12 @@ stages:
                           $errorMessage = @"
 
   ╔═══════════════════════════════════════════════════════════════════╗
-  ║             ❌ SANDBOX BRANCH KURALI İHLALİ!                        ║
+  ║             ❌ SANDBOX BRANCH KURALI İHLALİ!                      ║
   ╠═══════════════════════════════════════════════════════════════════╣
   ║                                                                   ║
-  ║  Sandbox branch'e SADECE feature/* branch'lerden PR açılabilir!    ║
+  ║  Sandbox branch'e SADECE feature/* branch'lerden PR açılabilir!   ║
   ║                                                                   ║
-  ║  ✅ İZİN VERİLEN:                                                   ║
+  ║  ✅ İZİN VERİLEN:                                                 ║
   ║     • feature/*  → Yeni özellik geliştirmeleri                    ║
   ║                                                                   ║
   ║  ❌ SİZİN BRANCH:                                                  ║
@@ -149,13 +149,13 @@ stages:
   ║                                                                   ║
   ║  📋 DOĞRU KULLANIM:                                                ║
   ║                                                                   ║
-  ║     1. sandbox branch'inden yeni branch açın:                      ║
+  ║     1.sandbox branch'inden yeni branch açın:                      ║
   ║        git checkout sandbox                                       ║
   ║        git checkout -b feature/yeni-ozellik                       ║
   ║                                                                   ║
-  ║     2. Geliştirmenizi yapın ve push edin                          ║
+  ║     2.Geliştirmenizi yapın ve push edin                          ║
   ║                                                                   ║
-  ║     3. feature/yeni-ozellik → sandbox PR açın                     ║
+  ║     3.feature/yeni-ozellik → sandbox PR açın                     ║
   ║                                                                   ║
   ╚═══════════════════════════════════════════════════════════════════╝
 "@
@@ -208,13 +208,13 @@ stages:
   ║     feature/* → sandbox → release                                 ║
   ║                                                                   ║
   ║  Bugfix İçin:                                                     ║
-  ║     1. release branch'inden bugfix açın:                           ║
+  ║     1.release branch'inden bugfix açın:                           ║
   ║        git checkout release                                       ║
   ║        git checkout -b bugfix/hata-aciklamasi                     ║
   ║                                                                   ║
-  ║     2. Düzeltmeyi yapın ve push edin                              ║
+  ║     2.Düzeltmeyi yapın ve push edin                              ║
   ║                                                                   ║
-  ║     3. bugfix/hata-aciklamasi → release PR açın                   ║
+  ║     3.bugfix/hata-aciklamasi → release PR açın                   ║
   ║                                                                   ║
   ╚═══════════════════════════════════════════════════════════════════╝
 "@
@@ -269,13 +269,13 @@ stages:
   ║     feature/* → sandbox → release → main                          ║
   ║                                                                   ║
   ║  Hotfix İçin (ACİL DURUM):                                        ║
-  ║     1. main branch'inden hotfix açın:                              ║
+  ║     1.main branch'inden hotfix açın:                              ║
   ║        git checkout main                                          ║
   ║        git checkout -b hotfix/acil-duzeltme                       ║
   ║                                                                   ║
-  ║     2. Düzeltmeyi yapın ve push edin                              ║
+  ║     2.Düzeltmeyi yapın ve push edin                              ║
   ║                                                                   ║
-  ║     3. hotfix/acil-duzeltme → main PR açın                        ║
+  ║     3.hotfix/acil-duzeltme → main PR açın                        ║
   ║                                                                   ║
   ╚═══════════════════════════════════════════════════════════════════╝
 "@
@@ -289,7 +289,7 @@ stages:
   ║               ❌ GEÇERSİZ HEDEF BRANCH!                             ║
   ╠═══════════════════════════════════════════════════════════════════╣
   ║                                                                   ║
-  ║  '$targetBranch' branch'i için PR kuralı tanımlanmamış. 
+  ║  '$targetBranch' branch'i için PR kuralı tanımlanmamış.
   ║                                                                   ║
   ║  Sadece şu branch'lere PR açılabilir:                             ║
   ║     • sandbox                                                     ║
@@ -342,7 +342,7 @@ stages:
     condition: |
       and(
         succeeded(),
-        ne(variables. isPR, true),
+        ne(variables.isPR, true),
         eq(variables.isRelease, true)
       )
     jobs:
@@ -366,16 +366,16 @@ stages:
                 Write-Host ""
                 Write-Host "  📌 Branch      : release"
                 Write-Host "  📌 Build       : $(Build.BuildNumber)"
-                Write-Host "  📌 Commit      : $(Build. SourceVersion)"
+                Write-Host "  📌 Commit      : $(Build.SourceVersion)"
                 Write-Host "  📌 Kaynak      : sandbox veya bugfix/* merge"
                 Write-Host ""
                 
                 if (Test-Path "$(Build.SourcesDirectory)/CompileApp.ps1") {
                     Write-Host "  ✅ CompileApp.ps1 bulundu, çalıştırılıyor..."
                     Write-Host ""
-                    & "$(Build. SourcesDirectory)/CompileApp.ps1"
+                    & "$(Build.SourcesDirectory)/CompileApp.ps1"
                 } else {
-                    Write-Host "  ##[warning]CompileApp. ps1 bulunamadı."
+                    Write-Host "  ##[warning]CompileApp.ps1 bulunamadı."
                     Write-Host "  Örnek build işlemi yapılıyor..."
                     Write-Host ""
                     
@@ -384,7 +384,7 @@ stages:
                     @{
                         BuildNumber = "$(Build.BuildNumber)"
                         Branch = "release"
-                        Commit = "$(Build. SourceVersion)"
+                        Commit = "$(Build.SourceVersion)"
                         BuildDate = (Get-Date).ToString("yyyy-MM-dd HH: mm:ss")
                         BuildType = "Release"
                     } | ConvertTo-Json | Out-File "$(Build.StagingDirectory)/build-info.json"
@@ -396,7 +396,7 @@ stages:
                 Write-Host "═══════════════════════════════════════════════════════════════"
                 Write-Host "                    ✅ BUILD COMPLETED                         "
                 Write-Host "═══════════════════════════════════════════════════════════════"
-              workingDirectory: $(Build. SourcesDirectory)
+              workingDirectory: $(Build.SourcesDirectory)
 
           - publish: $(Build.StagingDirectory)
             artifact: release-$(Build.BuildNumber)
@@ -526,19 +526,19 @@ stages:
                   Write-Host "  ║                                                           ║"
                   Write-Host "  ║  Manuel çözüm gerekiyor:                                   ║"
                   Write-Host "  ║                                                           ║"
-                  Write-Host "  ║  1. git checkout sandbox                                  ║"
-                  Write-Host "  ║  2. git pull origin sandbox                               ║"
-                  Write-Host "  ║  3. git merge origin/release                              ║"
-                  Write-Host "  ║  4.  Conflict'leri çözün                                   ║"
-                  Write-Host "  ║  5. git add .                                              ║"
-                  Write-Host "  ║  6. git commit -m 'Merge release into sandbox'            ║"
-                  Write-Host "  ║  7. git push origin sandbox                               ║"
+                  Write-Host "  ║  1.git checkout sandbox                                  ║"
+                  Write-Host "  ║  2.git pull origin sandbox                               ║"
+                  Write-Host "  ║  3.git merge origin/release                              ║"
+                  Write-Host "  ║  4. Conflict'leri çözün                                   ║"
+                  Write-Host "  ║  5.git add .                                             ║"
+                  Write-Host "  ║  6.git commit -m 'Merge release into sandbox'            ║"
+                  Write-Host "  ║  7.git push origin sandbox                               ║"
                   Write-Host "  ║                                                           ║"
                   Write-Host "  ╚═══════════════════════════════════════════════════════════╝"
                   Write-Host ""
                   
                   git merge --abort 2>&1
-                  Write-Host "  ##[warning]Back-merge iptal edildi.  Manuel müdahale gerekli."
+                  Write-Host "  ##[warning]Back-merge iptal edildi. Manuel müdahale gerekli."
               } else {
                   $pushResult = git push origin sandbox 2>&1
                   
@@ -564,7 +564,7 @@ stages:
     condition:  |
       and(
         succeeded(),
-        eq(variables. isMain, true)
+        eq(variables.isMain, true)
       )
     jobs:
       - job: SyncAllBranches
@@ -581,7 +581,7 @@ stages:
               Write-Host "══════════════════════════════════════════════════════════════"
               Write-Host ""
               
-              git config user. email "devops-bot@yourcompany.com"
+              git config user.email "devops-bot@yourcompany.com"
               git config user.name "DevOps Bot"
               git fetch origin --prune
               
