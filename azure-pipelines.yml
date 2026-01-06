@@ -1,0 +1,257 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Business Central CI/CD Pipeline
+# Branch Strategy: feature/* → sandbox → release → main
+# ═══════════════════════════════════════════════════════════════════════════════
+
+trigger:
+  branches:
+    include: [main, release, sandbox, feature/*, hotfix/*]
+
+pr:
+  branches:
+    include: [main, release, sandbox]
+
+variables:
+  isMain: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  isRelease: $[eq(variables['Build.SourceBranch'], 'refs/heads/release')]
+  isSandbox: $[eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')]
+  isHotfix: $[startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/')]
+  isPR: $[eq(variables['Build.Reason'], 'PullRequest')]
+
+pool:
+  vmImage: windows-latest
+
+stages:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PR VALIDATION - Branch kurallarını kontrol et
+  # ═══════════════════════════════════════════════════════════════════════════
+  - stage: Validate
+    displayName: " Validate PR"
+    condition: eq(variables.isPR, true)
+    jobs:
+      - job: ValidateBranch
+        displayName: "Validate Source Branch"
+        steps:
+          - checkout: none
+
+          - powershell: |
+              $sourceBranch = "$(System.PullRequest.SourceBranch)" -replace "refs/heads/", ""
+              $targetBranch = "$(System.PullRequest.TargetBranch)" -replace "refs/heads/", ""
+
+              Write-Host "##[section]PR Validation"
+              Write-Host "Source: $sourceBranch"
+              Write-Host "Target: $targetBranch"
+              Write-Host ""
+
+              $valid = $false
+              $errorMessage = ""
+
+              switch ($targetBranch) {
+                  "main" {
+                      if ($sourceBranch -eq "release" -or $sourceBranch -like "hotfix/*") {
+                          $valid = $true
+                      } else {
+                          $errorMessage = @"
+               MAIN BRANCH KURALI İHLALİ!
+
+              Main branch'e sadece şu kaynaklardan PR açılabilir:
+                 release
+                 hotfix/*
+
+              Sizin kaynak branch'iniz: $sourceBranch
+
+              Doğru akış: feature/* → sandbox → release → main
+              "@
+                      }
+                  }
+                  "release" {
+                      if ($sourceBranch -eq "sandbox" -or $sourceBranch -like "hotfix/*") {
+                          $valid = $true
+                      } else {
+                          $errorMessage = @"
+               RELEASE BRANCH KURALI İHLALİ!
+
+              Release branch'e sadece şu kaynaklardan PR açılabilir:
+                 sandbox
+                 hotfix/*
+              Sizin kaynak branch'iniz: $sourceBranch
+
+               Doğru akış: feature/* → sandbox → release
+              "@
+                      }
+                  }
+                  "sandbox" {
+                      if ($sourceBranch -like "feature/*" -or $sourceBranch -like "bugfix/*" -or $sourceBranch -like "improvement/*") {
+                          $valid = $true
+                      } else {
+                          $errorMessage = @"
+               SANDBOX BRANCH KURALI İHLALİ!
+
+              Sandbox branch'e sadece şu kaynaklardan PR açılabilir:
+                 feature/*
+                 bugfix/*
+                 improvement/*
+
+              Sizin kaynak branch'iniz: $sourceBranch
+              "@
+                      }
+                  }
+                  default { $valid = $true }
+              }
+
+              if ($valid) {
+                  Write-Host "##[section]✅ PR Validation Başarılı: $sourceBranch → $targetBranch"
+              } else {
+                  Write-Host "##[error]$errorMessage"
+                  exit 1
+              }
+            displayName: "🔍 Check Branch Rules"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BUILD STAGE
+  # ═══════════════════════════════════════════════════════════════════════════
+  - stage: Build
+    displayName: "Build"
+    dependsOn: Validate
+    condition: or(succeeded(), ne(variables.isPR, true))
+    jobs:
+      - job: Compile
+        displayName: "Compile AL Application"
+        timeoutInMinutes: 60
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: PowerShell@2
+            displayName: "Build & Package"
+            inputs:
+              targetType: filePath
+              filePath: CompileApp.ps1
+              workingDirectory: $(Build.SourcesDirectory)
+
+          - publish: $(Build.StagingDirectory)
+            artifact: drop
+            displayName: "Publish Artifact"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DEPLOY STAGES
+  # ═══════════════════════════════════════════════════════════════════════════
+  - stage: DeploySandbox
+    displayName: "🧪 Deploy Sandbox"
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables.isSandbox, true))
+    jobs:
+      - deployment: Sandbox
+        environment: Development
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+                - script: echo "Deployed to Sandbox"
+
+  - stage: DeployRelease
+    displayName: " Deploy Release"
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables.isRelease, true))
+    jobs:
+      - deployment: Release
+        environment: Staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+                - script: echo "Deployed to Staging"
+
+  - stage: DeployProduction
+    displayName: "🌟 Deploy Production"
+    dependsOn: Build
+    condition: and(succeeded(), or(eq(variables.isMain, true), eq(variables.isHotfix, true)))
+    jobs:
+      - deployment: Production
+        environment: Production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+                - script: echo " Deployed to Production"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BACK-MERGE (Main → Release → Sandbox) - WITH CONFLICT HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+  - stage: BackMerge
+    displayName: "Back-Merge"
+    dependsOn: DeployProduction
+    condition: and(succeeded(), eq(variables.isMain, true))
+    jobs:
+      - job: Sync
+        displayName: "Sync Branches"
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - powershell: |
+              # Git Kimlik Doğrulama
+              git config user.email "sahinbolukbasi@pargesoft.com"
+              git config user.name "DevOps Bot"
+              git fetch origin
+
+              # -------------------------------------------------------
+              # 1. ADIM: Main → Release
+              # -------------------------------------------------------
+              Write-Host "##[section] Merging Main into Release..."
+              git checkout release
+              git pull origin release # Uzak sunucudaki son hali al
+
+              # Merge Denemesi
+              git merge origin/main -m "[skip ci] Auto-merge: Main → Release" --no-edit
+
+              # Conflict Kontrolü
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "##[error]CONFLICT DETECTED: Main → Release"
+                  Write-Host " Otomatik birleştirme sırasında çakışma oluştu. İşlem iptal ediliyor."
+                  
+                  # Merge işlemini geri al ve temizle
+                  git merge --abort
+                  
+                  Write-Host "##[warning]Lütfen lokalinizde 'release' branchine geçip 'git merge main' komutunu manuel çalıştırarak çakışmaları çözün."
+                  exit 1
+              }
+              
+              # Başarılıysa Pushla
+              git push origin release
+              Write-Host " Main → Release senkronizasyonu başarılı."
+
+              # -------------------------------------------------------
+              # 2. ADIM: Release → Sandbox
+              # -------------------------------------------------------
+              Write-Host "##[section] Merging Release into Sandbox..."
+              git checkout sandbox
+              git pull origin sandbox
+
+              # Merge Denemesi
+              git merge origin/release -m "[skip ci] Auto-merge: Release → Sandbox" --no-edit
+
+              # Conflict Kontrolü
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "##[error] CONFLICT DETECTED: Release → Sandbox"
+                  Write-Host " Otomatik birleştirme sırasında çakışma oluştu. İşlem iptal ediliyor."
+                  
+                  # Merge işlemini geri al
+                  git merge --abort
+                  
+                  Write-Host "##[warning]Lütfen lokalinizde 'sandbox' branchine geçip 'git merge release' komutunu manuel çalıştırarak çakışmaları çözün."
+                  exit 1
+              }
+
+              # Başarılıysa Pushla
+              git push origin sandbox
+              Write-Host " Release → Sandbox senkronizasyonu başarılı."
+              
+            displayName: " Execute Back-Merge with Conflict Check"
