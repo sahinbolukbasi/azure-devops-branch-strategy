@@ -1,0 +1,678 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Business Central CI/CD Pipeline - FAST BUILD
+# Branch Strategy: feature/* → sandbox → release → main
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           HIZLI DERLEME                                    ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║                                                                           ║
+# ║  Bu pipeline CompileApp.ps1 kullanmadan doğrudan AL Compiler (alc.exe)    ║
+# ║  ile hızlı derleme yapar. Symbol cache kullanarak derleme süresini        ║
+# ║  minimize eder.                                                           ║
+# ║                                                                           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                           BRANCH KURALLARI                                 ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║                                                                           ║
+# ║  SANDBOX ← feature/* ONLY                                                 ║
+# ║     • Sadece feature branch'lerden PR kabul eder                          ║
+# ║     • Build YOK (sadece validation)                                       ║
+# ║                                                                           ║
+# ║  RELEASE ← sandbox, bugfix/* ONLY                                         ║
+# ║     • Sandbox veya bugfix branch'lerden PR kabul eder                     ║
+# ║     • Merge sonrası FAST BUILD çalışır                                    ║
+# ║     • Bugfix merge → Sandbox'a otomatik back-merge                        ║
+# ║                                                                           ║
+# ║  MAIN ← release, hotfix/* ONLY                                            ║
+# ║     • Release veya hotfix branch'lerden PR kabul eder                     ║
+# ║     • Merge sonrası FAST BUILD çalışır                                    ║
+# ║     • Hotfix merge → Release ve Sandbox'a otomatik back-merge             ║
+# ║                                                                           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# ══════════════════════════════════════════════════════════════════════════════
+
+trigger:
+  branches:
+    include:
+      - main
+      - release
+      - sandbox
+
+pr:
+  branches:
+    include:
+      - main
+      - release
+      - sandbox
+
+variables:
+  # PR Detection
+  isPR: $[eq(variables['Build.Reason'], 'PullRequest')]
+
+  # Branch Detection (Merge sonrası)
+  isMain: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  isRelease: $[eq(variables['Build.SourceBranch'], 'refs/heads/release')]
+  isSandbox: $[eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')]
+
+  # Build Configuration
+  buildConfiguration: "Release"
+
+pool:
+  vmImage: windows-latest
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGES
+# ══════════════════════════════════════════════════════════════════════════════
+
+stages:
+  # ════════════════════════════════════════════════════════════════════════════
+  # STAGE 1: PR VALIDATION
+  # Tüm PR'larda çalışır - Yanlış branch'ten PR'ı ENGELLER
+  # ════════════════════════════════════════════════════════════════════════════
+  - stage: Validate
+    displayName: "🔍 PR Validation"
+    condition: eq(variables.isPR, true)
+    jobs:
+      - job: ValidateBranchRules
+        displayName: "Branch Rules Check"
+        steps:
+          - checkout: none
+
+          - powershell: |
+              # ═══════════════════════════════════════════════════════════════
+              # Branch Validation Script
+              # Yanlış PR'ları engelleyerek geliştiricilerin hata yapmasını önler
+              # ═══════════════════════════════════════════════════════════════
+
+              $sourceBranch = "$(System.PullRequest.SourceBranch)" -replace "refs/heads/", ""
+              $targetBranch = "$(System.PullRequest.TargetBranch)" -replace "refs/heads/", ""
+
+              Write-Host ""
+              Write-Host "══════════════════════════════════════════════════════════════"
+              Write-Host "                    🔍 PR VALIDATION                          "
+              Write-Host "══════════════════════════════════════════════════════════════"
+              Write-Host ""
+              Write-Host "  📤 Kaynak Branch : $sourceBranch"
+              Write-Host "  📥 Hedef Branch  : $targetBranch"
+              Write-Host ""
+
+              $valid = $false
+              $willBuildAfterMerge = $false
+              $willBackMerge = $false
+              $backMergeTarget = ""
+              $errorMessage = ""
+
+              switch ($targetBranch) {
+                  # ──────────────────────────────────────────────────────────
+                  # SANDBOX BRANCH RULES
+                  # Sadece feature/* kabul edilir
+                  # ──────────────────────────────────────────────────────────
+                  "sandbox" {
+                      if ($sourceBranch -like "feature/*") {
+                          $valid = $true
+                          $willBuildAfterMerge = $false
+                          Write-Host "  ✅ Geçerli: feature/* → sandbox"
+                          Write-Host ""
+                          Write-Host "  ℹ️  Bu merge sonrası BUILD yapılmayacak."
+                          Write-Host "      Kod sandbox'ta test edilecek."
+                      }
+                      else {
+                          $errorMessage = @"
+
+                                            ╔═══════════════════════════════════════════════════════════════════╗
+                                            ║             ❌ SANDBOX BRANCH KURALI İHLALİ!                      ║
+                                            ╠═══════════════════════════════════════════════════════════════════╣
+                                            ║                                                                   ║
+                                            ║  Sandbox branch'e SADECE feature/* branch'lerden PR açılabilir!   ║
+                                            ║                                                                   ║
+                                            ║  ✅ İZİN VERİLEN:                                                 ║
+                                            ║     • feature/*  → Yeni özellik geliştirmeleri                    ║
+                                            ║                                                                   ║
+                                            ║  ❌ SİZİN BRANCH:                                                  ║
+                                            ║     • $sourceBranch
+                                            ║                                                                   ║
+                                            ╚═══════════════════════════════════════════════════════════════════╝
+                                          "@
+                      }
+                  }
+                  
+                  # ──────────────────────────────────────────────────────────
+                  # RELEASE BRANCH RULES
+                  # Sadece sandbox veya bugfix/* kabul edilir
+                  # ──────────────────────────────────────────────────────────
+                  "release" {
+                      if ($sourceBranch -eq "sandbox") {
+                          $valid = $true
+                          $willBuildAfterMerge = $true
+                          Write-Host "  ✅ Geçerli: sandbox → release"
+                          cccc
+                          Write-Host "  📦 Bu merge sonrası FAST BUILD çalışacak."
+                      }
+                      elseif ($sourceBranch -like "bugfix/*") {
+                          $valid = $true
+                          $willBuildAfterMerge = $true
+                          $willBackMerge = $true
+                          $backMergeTarget = "sandbox"
+                          Write-Host "  ✅ Geçerli: bugfix/* → release"
+                          Write-Host ""
+                          Write-Host "  📦 Bu merge sonrası FAST BUILD çalışacak."
+                          Write-Host "  🔄 Otomatik back-merge: release → sandbox"
+                      }
+                      else {
+                          $errorMessage = @"
+
+                                            ╔═══════════════════════════════════════════════════════════════════╗
+                                            ║             ❌ RELEASE BRANCH KURALI İHLALİ!                       ║
+                                            ╠═══════════════════════════════════════════════════════════════════╣
+                                            ║                                                                   ║
+                                            ║  Release branch'e SADECE şu kaynaklardan PR açılabilir:            ║
+                                            ║                                                                   ║
+                                            ║  ✅ İZİN VERİLEN:                                                  ║
+                                            ║     • sandbox   → Normal geliştirme akışı                         ║
+                                            ║     • bugfix/*  → Release ortamı hata düzeltmeleri                ║
+                                            ║                                                                   ║
+                                            ║  ❌ SİZİN BRANCH:                                                  ║
+                                            ║     • $sourceBranch
+                                            ║                                                                   ║
+                                            ╚═══════════════════════════════════════════════════════════════════╝
+                                          "@
+                      }
+                  }
+                  
+                  # ──────────────────────────────────────────────────────────
+                  # MAIN BRANCH RULES
+                  # Sadece release veya hotfix/* kabul edilir
+                  # ──────────────────────────────────────────────────────────
+                  "main" {
+                      if ($sourceBranch -eq "release") {
+                          $valid = $true
+                          $willBuildAfterMerge = $true
+                          Write-Host "  ✅ Geçerli: release → main"
+                          Write-Host ""
+                          Write-Host "  📦 Bu merge sonrası FAST BUILD çalışacak."
+                          Write-Host "  🌟 Production-ready kod!"
+                      }
+                      elseif ($sourceBranch -like "hotfix/*") {
+                          $valid = $true
+                          $willBuildAfterMerge = $true
+                          $willBackMerge = $true
+                          $backMergeTarget = "release ve sandbox"
+                          Write-Host "  ✅ Geçerli: hotfix/* → main"
+                          Write-Host ""
+                          Write-Host "  📦 Bu merge sonrası FAST BUILD çalışacak."
+                          Write-Host "  🔄 Otomatik back-merge: main → release → sandbox"
+                          Write-Host "  🔥 Acil düzeltme modu!"
+                      }
+                      else {
+                          $errorMessage = @"
+
+                                          ╔═══════════════════════════════════════════════════════════════════╗
+                                          ║               ❌ MAIN BRANCH KURALI İHLALİ!                        ║
+                                          ╠═══════════════════════════════════════════════════════════════════╣
+                                          ║                                                                   ║
+                                          ║  Main branch'e SADECE şu kaynaklardan PR açılabilir:              ║
+                                          ║                                                                   ║
+                                          ║  ✅ İZİN VERİLEN:                                                  ║
+                                          ║     • release   → Normal release akışı                            ║
+                                          ║     • hotfix/*  → Acil canlı düzeltmeleri                         ║
+                                          ║                                                                   ║
+                                          ║  ❌ SİZİN BRANCH:                                                   ║
+                                          ║     • $sourceBranch
+                                          ║                                                                   ║
+                                          ╚═══════════════════════════════════════════════════════════════════╝
+                                        "@
+                      }
+                  }
+                  
+                  default {
+                      $errorMessage = @"
+
+                                      ╔═══════════════════════════════════════════════════════════════════╗
+                                      ║               ❌ GEÇERSİZ HEDEF BRANCH!                             ║
+                                      ╠═══════════════════════════════════════════════════════════════════╣
+                                      ║                                                                   ║
+                                      ║  '$targetBranch' branch'i için PR kuralı tanımlanmamış.
+                                      ║                                                                   ║
+                                      ║  Sadece şu branch'lere PR açılabilir:                             ║
+                                      ║     • sandbox                                                     ║
+                                      ║     • release                                                     ║
+                                      ║     • main                                                        ║
+                                      ║                                                                   ║
+                                      ╚═══════════════════════════════════════════════════════════════════╝
+                                    "@
+                  }
+              }
+
+              # ──────────────────────────────────────────────────────────
+              # Sonuç
+              # ──────────────────────────────────────────────────────────
+              Write-Host ""
+
+              if ($valid) {
+                  Write-Host "══════════════════════════════════════════════════════════════"
+                  Write-Host "  ✅ PR VALIDATION BAŞARILI"
+                  Write-Host "══════════════════════════════════════════════════════════════"
+                  Write-Host ""
+                  Write-Host "  $sourceBranch → $targetBranch"
+                  Write-Host ""
+                  
+                  if ($willBuildAfterMerge) {
+                      Write-Host "  📦 Merge sonrası: FAST BUILD"
+                  }
+                  if ($willBackMerge) {
+                      Write-Host "  🔄 Merge sonrası: Back-merge → $backMergeTarget"
+                  }
+                  if (-not $willBuildAfterMerge -and -not $willBackMerge) {
+                      Write-Host "  ⚡ Merge sonrası: Sadece kod birleştirilecek"
+                  }
+                  
+                  Write-Host ""
+                  Write-Host "══════════════════════════════════════════════════════════════"
+              } else {
+                  Write-Host "##[error]$errorMessage"
+                  exit 1
+              }
+            displayName: "🔍 Validate Branch Rules"
+            failOnStderr: true
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # STAGE 2: FAST BUILD - RELEASE BRANCH
+  # sandbox → release veya bugfix/* → release merge sonrası
+  # CompileApp.ps1 KULLANMADAN doğrudan AL Compiler ile hızlı derleme
+  # ════════════════════════════════════════════════════════════════════════════
+  - stage: FastBuildRelease
+    displayName: "⚡ Fast Build (Release)"
+    condition: |
+      and(
+        succeeded(),
+        ne(variables.isPR, true),
+        eq(variables.isRelease, true)
+      )
+    jobs:
+      - job: QuickCompileApp
+        displayName: "Quick Compile AL Application"
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 1
+
+          # Symbol Cache - Derleme süresini azaltır
+          - task: Cache@2
+            displayName: "📦 Cache AL Symbols"
+            inputs:
+              key: 'alpackages | "$(Agent.OS)" | app.json'
+              path: "./.alpackages"
+              cacheHitVar: SYMBOLS_CACHE_HIT
+
+          # AL Compiler İndir ve Çıkar
+          - task: PowerShell@2
+            displayName: "⬇️ Download & Extract AL Compiler"
+            inputs:
+              targetType: "inline"
+              script: |
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host "                    ⬇️ AL COMPILER DOWNLOAD                     "
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host ""
+
+                $vsixUrl = "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-dynamics-smb/vsextensions/al/latest/vspackage"
+                $vsixPath = "$(Build.BinariesDirectory)\al.zip"
+                $extractPath = "$(Build.BinariesDirectory)\extension"
+
+                Write-Host "  📥 AL Language Extension indiriliyor..."
+                Invoke-WebRequest -Uri $vsixUrl -OutFile $vsixPath
+
+                Write-Host "  📦 Compiler çıkarılıyor..."
+                Expand-Archive -Path $vsixPath -DestinationPath $extractPath -Force
+
+                $alc = Get-ChildItem -Path $extractPath -Filter alc.exe -Recurse | Select-Object -First 1
+                Write-Host "##vso[task.setvariable variable=alcPath]$($alc.FullName)"
+                Write-Host ""
+                Write-Host "  ✅ Compiler bulundu: $($alc.FullName)"
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+
+          # Hızlı Derleme
+          - task: PowerShell@2
+            displayName: "⚡ Quick Compile AL"
+            inputs:
+              targetType: "inline"
+              script: |
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host "                    ⚡ FAST BUILD - RELEASE                     "
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host ""
+                Write-Host "  📌 Branch      : release"
+                Write-Host "  📌 Build       : $(Build.BuildNumber)"
+                Write-Host "  📌 Commit      : $(Build.SourceVersion)"
+                Write-Host "  📌 Mod         : Hızlı Derleme (CompileApp.ps1 YOK)"
+                Write-Host ""
+
+                $app = Get-Content "app.json" | ConvertFrom-Json
+                $outPath = "$(Build.ArtifactStagingDirectory)\$($app.publisher)_$($app.name)_$($app.version).app"
+
+                Write-Host "  📦 Derleniyor: $($app.name) v$($app.version)"
+                Write-Host "  📤 Çıktı     : $outPath"
+                Write-Host ""
+
+                # AL Compiler ile doğrudan derleme
+                & "$(alcPath)" /project:$(Build.SourcesDirectory) /packagecachepath:$(Build.SourcesDirectory)/.alpackages /out:$outPath
+
+                if ($LASTEXITCODE -ne 0) { 
+                    Write-Host ""
+                    Write-Host "  ##[error]❌ Derleme başarısız! (Exit Code: $LASTEXITCODE)"
+                    exit 1 
+                }
+
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host "  ##[section]✅ App derlendi - Hızlı mod!"
+                Write-Host "═══════════════════════════════════════════════════════════════"
+              workingDirectory: $(Build.SourcesDirectory)
+
+          # Artifact Yayınla
+          - task: PublishBuildArtifacts@1
+            displayName: "📤 Publish Artifact"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)"
+              ArtifactName: "release-$(Build.BuildNumber)"
+              publishLocation: "Container"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # STAGE 3: FAST BUILD - MAIN BRANCH
+  # release → main veya hotfix/* → main merge sonrası
+  # CompileApp.ps1 KULLANMADAN doğrudan AL Compiler ile hızlı derleme
+  # ════════════════════════════════════════════════════════════════════════════
+  - stage: FastBuildMain
+    displayName: "⚡ Fast Build (Main)"
+    condition: |
+      and(
+        succeeded(),
+        ne(variables.isPR, true),
+        eq(variables.isMain, true)
+      )
+    jobs:
+      - job: QuickCompileApp
+        displayName: "Quick Compile AL Application"
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 1
+
+          # Symbol Cache
+          - task: Cache@2
+            displayName: "📦 Cache AL Symbols"
+            inputs:
+              key: 'alpackages | "$(Agent.OS)" | app.json'
+              path: "./.alpackages"
+              cacheHitVar: SYMBOLS_CACHE_HIT
+
+          # AL Compiler İndir
+          - task: PowerShell@2
+            displayName: "⬇️ Download & Extract AL Compiler"
+            inputs:
+              targetType: "inline"
+              script: |
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host "                    ⬇️ AL COMPILER DOWNLOAD                     "
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host ""
+
+                $vsixUrl = "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-dynamics-smb/vsextensions/al/latest/vspackage"
+                $vsixPath = "$(Build.BinariesDirectory)\al.zip"
+                $extractPath = "$(Build.BinariesDirectory)\extension"
+
+                Write-Host "  📥 AL Language Extension indiriliyor..."
+                Invoke-WebRequest -Uri $vsixUrl -OutFile $vsixPath
+
+                Write-Host "  📦 Compiler çıkarılıyor..."
+                Expand-Archive -Path $vsixPath -DestinationPath $extractPath -Force
+
+                $alc = Get-ChildItem -Path $extractPath -Filter alc.exe -Recurse | Select-Object -First 1
+                Write-Host "##vso[task.setvariable variable=alcPath]$($alc.FullName)"
+                Write-Host ""
+                Write-Host "  ✅ Compiler bulundu: $($alc.FullName)"
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+
+          # Hızlı Derleme - Production
+          - task: PowerShell@2
+            displayName: "⚡ Quick Compile AL (Production)"
+            inputs:
+              targetType: "inline"
+              script: |
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host "                    🌟 FAST BUILD - PRODUCTION                  "
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host ""
+                Write-Host "  📌 Branch      : main"
+                Write-Host "  📌 Build       : $(Build.BuildNumber)"
+                Write-Host "  📌 Commit      : $(Build.SourceVersion)"
+                Write-Host "  📌 Mod         : Hızlı Derleme (CompileApp.ps1 YOK)"
+                Write-Host ""
+
+                $app = Get-Content "app.json" | ConvertFrom-Json
+                $outPath = "$(Build.ArtifactStagingDirectory)\$($app.publisher)_$($app.name)_$($app.version).app"
+
+                Write-Host "  📦 Derleniyor: $($app.name) v$($app.version)"
+                Write-Host "  📤 Çıktı     : $outPath"
+                Write-Host ""
+
+                # AL Compiler ile doğrudan derleme
+                & "$(alcPath)" /project:$(Build.SourcesDirectory) /packagecachepath:$(Build.SourcesDirectory)/.alpackages /out:$outPath
+
+                if ($LASTEXITCODE -ne 0) { 
+                    Write-Host ""
+                    Write-Host "  ##[error]❌ Derleme başarısız! (Exit Code: $LASTEXITCODE)"
+                    exit 1 
+                }
+
+                Write-Host ""
+                Write-Host "═══════════════════════════════════════════════════════════════"
+                Write-Host "  ##[section]✅ Production app derlendi - Hızlı mod!"
+                Write-Host "═══════════════════════════════════════════════════════════════"
+              workingDirectory: $(Build.SourcesDirectory)
+
+          # Artifact Yayınla
+          - task: PublishBuildArtifacts@1
+            displayName: "📤 Publish Artifact"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)"
+              ArtifactName: "production-$(Build.BuildNumber)"
+              publishLocation: "Container"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # STAGE 4: BACK-MERGE (Release → Sandbox)
+  # Bugfix merge sonrası sandbox'ı güncelle
+  # ════════════════════════════════════════════════════════════════════════════
+  - stage: BackMergeToSandbox
+    displayName: "🔄 Sync: Release → Sandbox"
+    dependsOn: FastBuildRelease
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.isRelease, true)
+      )
+    jobs:
+      - job: SyncSandbox
+        displayName: "Back-merge to Sandbox"
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - powershell: |
+              Write-Host ""
+              Write-Host "══════════════════════════════════════════════════════════════"
+              Write-Host "              🔄 RELEASE → SANDBOX SYNC                       "
+              Write-Host "══════════════════════════════════════════════════════════════"
+              Write-Host ""
+
+              git config user.email "devops-bot@yourcompany.com"
+              git config user.name "DevOps Bot"
+              git fetch origin --prune
+
+              Write-Host "  📌 Release'deki değişiklikler sandbox'a aktarılıyor..."
+              Write-Host ""
+
+              git checkout sandbox 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "  ##[error]Sandbox branch'e geçilemedi!"
+                  exit 1
+              }
+
+              git pull origin sandbox --no-edit 2>&1
+
+              $mergeResult = git merge origin/release -m "[skip ci] 🔄 Auto-sync: Release → Sandbox (bugfix/feature merge)" --no-edit 2>&1
+
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host ""
+                  Write-Host "  ╔═══════════════════════════════════════════════════════════╗"
+                  Write-Host "  ║  ⚠️ CONFLICT DETECTED: Release → Sandbox                  ║"
+                  Write-Host "  ╠═══════════════════════════════════════════════════════════╣"
+                  Write-Host "  ║                                                           ║"
+                  Write-Host "  ║  Manuel çözüm gerekiyor:                                   ║"
+                  Write-Host "  ║                                                           ║"
+                  Write-Host "  ║  1. git checkout sandbox                                  ║"
+                  Write-Host "  ║  2. git pull origin sandbox                               ║"
+                  Write-Host "  ║  3. git merge origin/release                              ║"
+                  Write-Host "  ║  4. Conflict'leri çözün                                   ║"
+                  Write-Host "  ║  5. git add .                                             ║"
+                  Write-Host "  ║  6. git commit -m 'Merge release into sandbox'            ║"
+                  Write-Host "  ║  7. git push origin sandbox                               ║"
+                  Write-Host "  ║                                                           ║"
+                  Write-Host "  ╚═══════════════════════════════════════════════════════════╝"
+                  Write-Host ""
+                  
+                  git merge --abort 2>&1
+                  Write-Host "  ##[warning]Back-merge iptal edildi. Manuel müdahale gerekli."
+              } else {
+                  $pushResult = git push origin sandbox 2>&1
+                  
+                  if ($LASTEXITCODE -eq 0) {
+                      Write-Host "  ✅ Release → Sandbox sync başarılı!"
+                  } else {
+                      Write-Host "  ℹ️ Değişiklik yok veya push başarısız."
+                  }
+              }
+
+              Write-Host ""
+              Write-Host "══════════════════════════════════════════════════════════════"
+            displayName: "🔄 Execute Back-Merge"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # STAGE 5: BACK-MERGE (Main → Release → Sandbox)
+  # Hotfix merge sonrası tüm branch'leri güncelle
+  # ════════════════════════════════════════════════════════════════════════════
+  - stage: BackMergeFromMain
+    displayName: "🔄 Sync: Main → Release → Sandbox"
+    dependsOn: FastBuildMain
+    condition: |
+      and(
+        succeeded(),
+        eq(variables.isMain, true)
+      )
+    jobs:
+      - job: SyncAllBranches
+        displayName: "Back-merge to Release & Sandbox"
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - powershell: |
+              Write-Host ""
+              Write-Host "══════════════════════════════════════════════════════════════"
+              Write-Host "              🔄 MAIN → RELEASE → SANDBOX SYNC                "
+              Write-Host "══════════════════════════════════════════════════════════════"
+              Write-Host ""
+
+              git config user.email "devops-bot@yourcompany.com"
+              git config user.name "DevOps Bot"
+              git fetch origin --prune
+
+              $hasError = $false
+
+              # ────────────────────────────────────────────────────────────
+              # ADIM 1: Main → Release
+              # ────────────────────────────────────────────────────────────
+              Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              Write-Host "  📌 ADIM 1: Main → Release"
+              Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              Write-Host ""
+
+              git checkout release 2>&1
+              git pull origin release --no-edit 2>&1
+
+              $mergeResult = git merge origin/main -m "[skip ci] 🔄 Auto-sync: Main → Release (hotfix/release merge)" --no-edit 2>&1
+
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "  ##[warning]❌ CONFLICT: Main → Release"
+                  Write-Host "  Manuel çözüm gerekiyor!"
+                  git merge --abort 2>&1
+                  $hasError = $true
+              } else {
+                  git push origin release 2>&1
+                  if ($LASTEXITCODE -eq 0) {
+                      Write-Host "  ✅ Main → Release başarılı!"
+                  } else {
+                      Write-Host "  ℹ️ Değişiklik yok."
+                  }
+              }
+
+              # ────────────────────────────────────────────────────────────
+              # ADIM 2: Release → Sandbox
+              # ────────────────────────────────────────────────────────────
+              Write-Host ""
+              Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              Write-Host "  📌 ADIM 2: Release → Sandbox"
+              Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              Write-Host ""
+
+              git checkout sandbox 2>&1
+              git pull origin sandbox --no-edit 2>&1
+
+              $mergeResult = git merge origin/release -m "[skip ci] 🔄 Auto-sync: Release → Sandbox (from main)" --no-edit 2>&1
+
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "  ##[warning]❌ CONFLICT: Release → Sandbox"
+                  Write-Host "  Manuel çözüm gerekiyor!"
+                  git merge --abort 2>&1
+                  $hasError = $true
+              } else {
+                  git push origin sandbox 2>&1
+                  if ($LASTEXITCODE -eq 0) {
+                      Write-Host "  ✅ Release → Sandbox başarılı!"
+                  } else {
+                      Write-Host "  ℹ️ Değişiklik yok."
+                  }
+              }
+
+              # ────────────────────────────────────────────────────────────
+              # Sonuç
+              # ────────────────────────────────────────────────────────────
+              Write-Host ""
+              Write-Host "══════════════════════════════════════════════════════════════"
+
+              if ($hasError) {
+                  Write-Host "  ##[warning]⚠️ BACK-MERGE TAMAMLANDI (CONFLICT'LER VAR)"
+                  Write-Host ""
+                  Write-Host "  Lütfen conflict'leri manuel olarak çözün."
+              } else {
+                  Write-Host "  ✅ TÜM BRANCH'LER SENKRONİZE EDİLDİ"
+                  Write-Host ""
+                  Write-Host "  Main → Release → Sandbox ✓"
+              }
+
+              Write-Host "══════════════════════════════════════════════════════════════"
+            displayName: "🔄 Execute Back-Merge"
