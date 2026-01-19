@@ -70,6 +70,7 @@
 │    PR açılır │
 └──────────────┘
 ```
+<img width="800" height="339" alt="image" src="https://github.com/user-attachments/assets/31f1f270-6cf4-4a7a-9bc4-57df7cb87e67" />
 
 ---
 
